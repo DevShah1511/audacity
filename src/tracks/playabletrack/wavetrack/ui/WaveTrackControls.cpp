@@ -67,6 +67,10 @@ std::vector<UIHandlePtr> WaveTrackControls::HitTest
             mSoloHandle, state, rect, pProject, track)))
             return result;
 
+         if (NULL != (result = EffectsButtonHandle::HitTest(
+            mEffectsHandle, state, rect, pProject, track)))
+            return result;
+
          if (NULL != (result = GainSliderHandle::HitTest(
             mGainHandle, state, rect, track)))
             return result;
@@ -553,6 +557,7 @@ BEGIN_POPUP_MENU(WaveTrackMenuTable)
          ProjectAudioIO::Get( project ).IsAudioActive();
    };
 
+
    BeginSection( "SubViews" );
       // Multi-view check mark item, if more than one track sub-view type is
       // known
@@ -943,7 +948,6 @@ void WaveTrackMenuTable::OnSplitStereoMono(wxCommandEvent &)
    mpData->result = RefreshAll | FixScrollbars;
 }
 
-//=============================================================================
 PopupMenuTable *WaveTrackControls::GetMenuExtension(Track * pTrack)
 {
    static Registry::OrderingPreferenceInitializer init{
@@ -1073,7 +1077,7 @@ using TCPLine = TrackInfo::TCPLine;
 static const struct WaveTrackTCPLines
    : TCPLines { WaveTrackTCPLines() {
    (TCPLines&)*this =
-      PlayableTrackControls::StaticTCPLines();
+      PlayableTrackControls::StaticWaveTCPLines();
    insert( end(), {
 
       { TCPLine::kItemGain, kTrackInfoSliderHeight, kTrackInfoSliderExtra,

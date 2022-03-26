@@ -19,8 +19,8 @@ class NumericTextCtrl;
 #include <wx/event.h> // to inherit
 #include <wx/weakref.h>
 
-#include "EffectInterface.h"
-#include "ModuleInterface.h"
+#include "../Effect.h"
+#include "PluginProvider.h"
 #include "PluginInterface.h"
 
 #include "ladspa.h"
@@ -40,8 +40,7 @@ class NumericTextCtrl;
 
 class LadspaEffectMeter;
 
-class LadspaEffect final : public wxEvtHandler,
-                     public EffectUIClientInterface
+class LadspaEffect final : public Effect
 {
 public:
    LadspaEffect(const wxString & path, int index);
@@ -49,35 +48,41 @@ public:
 
    // ComponentInterface implementation
 
-   PluginPath GetPath() override;
-   ComponentInterfaceSymbol GetSymbol() override;
-   VendorSymbol GetVendor() override;
-   wxString GetVersion() override;
-   TranslatableString GetDescription() override;
+   PluginPath GetPath() const override;
+   ComponentInterfaceSymbol GetSymbol() const override;
+   VendorSymbol GetVendor() const override;
+   wxString GetVersion() const override;
+   TranslatableString GetDescription() const override;
 
    // EffectDefinitionInterface implementation
 
-   EffectType GetType() override;
-   EffectFamilySymbol GetFamily() override;
-   bool IsInteractive() override;
-   bool IsDefault() override;
-   bool SupportsRealtime() override;
-   bool SupportsAutomation() override;
+   EffectType GetType() const override;
+   EffectFamilySymbol GetFamily() const override;
+   bool IsInteractive() const override;
+   bool IsDefault() const override;
+   bool SupportsRealtime() const override;
+   bool SupportsAutomation() const override;
 
-   bool GetAutomationParameters(CommandParameters & parms) override;
-   bool SetAutomationParameters(CommandParameters & parms) override;
+   bool SaveSettings(
+      const EffectSettings &settings, CommandParameters & parms) const override;
+   bool LoadSettings(
+      const CommandParameters & parms, Settings &settings) const override;
 
-   bool LoadUserPreset(const RegistryPath & name) override;
-   bool SaveUserPreset(const RegistryPath & name) override;
+   bool LoadUserPreset(
+      const RegistryPath & name, Settings &settings) const override;
+   bool DoLoadUserPreset(const RegistryPath & name, Settings &settings);
+   bool SaveUserPreset(
+      const RegistryPath & name, const Settings &settings) const override;
 
-   RegistryPaths GetFactoryPresets() override;
-   bool LoadFactoryPreset(int id) override;
-   bool LoadFactoryDefaults() override;
+   RegistryPaths GetFactoryPresets() const override;
+   bool LoadFactoryPreset(int id, EffectSettings &settings) const override;
+   bool LoadFactoryDefaults(EffectSettings &settings) const override;
+   bool DoLoadFactoryDefaults(EffectSettings &settings);
 
    // EffectProcessor implementation
 
-   unsigned GetAudioInCount() override;
-   unsigned GetAudioOutCount() override;
+   unsigned GetAudioInCount() const override;
+   unsigned GetAudioOutCount() const override;
 
    int GetMidiInCount() override;
    int GetMidiOutCount() override;
@@ -89,36 +94,41 @@ public:
    sampleCount GetLatency() override;
    size_t GetTailSize() override;
 
-   bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
+   bool ProcessInitialize(EffectSettings &settings,
+      sampleCount totalLen, ChannelNames chanMap) override;
    bool ProcessFinalize() override;
-   size_t ProcessBlock( const float *const *inBlock, float *const *outBlock,
-      size_t blockLen) override;
+   size_t ProcessBlock(EffectSettings &settings,
+      const float *const *inBlock, float *const *outBlock, size_t blockLen)
+      override;
 
-   bool RealtimeInitialize() override;
-   bool RealtimeAddProcessor(unsigned numChannels, float sampleRate) override;
-   bool RealtimeFinalize() noexcept override;
+   bool RealtimeInitialize(EffectSettings &settings) override;
+   bool RealtimeAddProcessor(EffectSettings &settings,
+      unsigned numChannels, float sampleRate) override;
+   bool RealtimeFinalize(EffectSettings &settings) noexcept override;
    bool RealtimeSuspend() override;
    bool RealtimeResume() noexcept override;
-   bool RealtimeProcessStart() override;
-   size_t RealtimeProcess(int group, const float *const *inbuf,
-      float *const *outbuf, size_t numSamples) override;
-   bool RealtimeProcessEnd() noexcept override;
+   bool RealtimeProcessStart(EffectSettings &settings) override;
+   size_t RealtimeProcess(int group,  EffectSettings &settings,
+      const float *const *inbuf, float *const *outbuf, size_t numSamples)
+      override;
+   bool RealtimeProcessEnd(EffectSettings &) noexcept override;
 
    int ShowClientInterface(
       wxWindow &parent, wxDialog &dialog, bool forceModal) override;
+   bool InitializePlugin();
 
    // EffectUIClientInterface implementation
 
-   bool SetHost(EffectHostInterface *host) override;
-   bool PopulateUI(ShuttleGui &S) override;
+   bool InitializeInstance(EffectSettings &settings) override;
+   std::unique_ptr<EffectUIValidator> PopulateUI(
+      ShuttleGui &S, EffectSettingsAccess &access) override;
    bool IsGraphicalUI() override;
-   bool ValidateUI() override;
-   bool HideUI() override;
+   bool ValidateUI(EffectSettings &) override;
    bool CloseUI() override;
 
    bool CanExportPresets() override;
-   void ExportPresets() override;
-   void ImportPresets() override;
+   void ExportPresets(const EffectSettings &settings) const override;
+   void ImportPresets(EffectSettings &settings) override;
 
    bool HasOptions() override;
    void ShowOptions() override;
@@ -129,8 +139,9 @@ private:
    bool Load();
    void Unload();
 
-   bool LoadParameters(const RegistryPath & group);
-   bool SaveParameters(const RegistryPath & group);
+   bool LoadParameters(const RegistryPath & group, EffectSettings &settings);
+   bool SaveParameters(
+      const RegistryPath & group, const EffectSettings &settings) const;
 
    LADSPA_Handle InitInstance(float sampleRate);
    void FreeInstance(LADSPA_Handle handle);
@@ -144,7 +155,6 @@ private:
 
    wxString mPath;
    int mIndex;
-   EffectHostInterface *mHost;
 
    wxDynamicLibrary mLib;
    const LADSPA_Descriptor *mData;
@@ -198,7 +208,7 @@ private:
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-class LadspaEffectsModule final : public ModuleInterface
+class LadspaEffectsModule final : public PluginProvider
 {
 public:
    LadspaEffectsModule();
@@ -206,13 +216,13 @@ public:
 
    // ComponentInterface implementation
 
-   PluginPath GetPath() override;
-   ComponentInterfaceSymbol GetSymbol() override;
-   VendorSymbol GetVendor() override;
-   wxString GetVersion() override;
-   TranslatableString GetDescription() override;
+   PluginPath GetPath() const override;
+   ComponentInterfaceSymbol GetSymbol() const override;
+   VendorSymbol GetVendor() const override;
+   wxString GetVersion() const override;
+   TranslatableString GetDescription() const override;
 
-   // ModuleInterface implementation
+   // PluginProvider implementation
 
    bool Initialize() override;
    void Terminate() override;
@@ -221,8 +231,8 @@ public:
    const FileExtensions &GetFileExtensions() override;
    FilePath InstallPath() override;
 
-   bool AutoRegisterPlugins(PluginManagerInterface & pm) override;
-   PluginPaths FindPluginPaths(PluginManagerInterface & pm) override;
+   void AutoRegisterPlugins(PluginManagerInterface & pm) override;
+   PluginPaths FindModulePaths(PluginManagerInterface & pm) override;
    unsigned DiscoverPluginsAtPath(
       const PluginPath & path, TranslatableString &errMsg,
       const RegistrationCallback &callback)
@@ -231,7 +241,7 @@ public:
    bool IsPluginValid(const PluginPath & path, bool bFast) override;
 
    std::unique_ptr<ComponentInterface>
-      CreateInstance(const PluginPath & path) override;
+      LoadPlugin(const PluginPath & path) override;
 
    // LadspaEffectModule implementation
 

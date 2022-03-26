@@ -24,7 +24,7 @@
 #include <utility>
 #include <wx/atomic.h> // member variable
 
-#include "ModuleInterface.h" // for PluginID
+#include "PluginProvider.h" // for PluginID
 #include "Observer.h"
 #include "SampleCount.h"
 #include "SampleFormat.h"
@@ -56,6 +56,8 @@ typedef int PaError;
 namespace RealtimeEffects { class SuspensionScope; }
 
 bool ValidateDeviceNames();
+
+enum class Acknowledge { eNone = 0, eStart, eStop };
 
 /*!
  Emitted by the global AudioIO object when play, recording, or monitoring
@@ -303,6 +305,24 @@ public:
    std::atomic<bool>   mAudioThreadShouldCallTrackBufferExchangeOnce;
    std::atomic<bool>   mAudioThreadTrackBufferExchangeLoopRunning;
    std::atomic<bool>   mAudioThreadTrackBufferExchangeLoopActive;
+      
+   std::atomic<Acknowledge>  mAudioThreadAcknowledge;
+
+   // Sync start/stop of AudioThread processing
+   void StartAudioThreadAndWait();
+   void StopAudioThreadAndWait();
+
+   // Async start/stop + wait of AudioThread processing.
+   // Provided to allow more flexibility, however use with caution:
+   // never call Stop between Start and the wait for Started (and the converse)
+   void StartAudioThread();
+   void WaitForAudioThreadStarted();
+   void StopAudioThread();
+   void WaitForAudioThreadStopped();
+
+   void ProcessOnceAndWait( std::chrono::milliseconds sleepTime = std::chrono::milliseconds(50) );
+
+
 
    std::atomic<bool>   mForceFadeOut{ false };
 

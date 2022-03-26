@@ -159,12 +159,16 @@ END_EVENT_TABLE()
 EffectUIHost::EffectUIHost(wxWindow *parent,
    AudacityProject &project,
    EffectUIHostInterface &effect,
-   EffectUIClientInterface &client)
+   EffectUIClientInterface &client,
+   EffectSettingsAccess &access)
 :  wxDialogWrapper(parent, wxID_ANY, effect.GetDefinition().GetName(),
                    wxDefaultPosition, wxDefaultSize,
                    wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMINIMIZE_BOX | wxMAXIMIZE_BOX)
 , mEffectUIHost{ effect }
 , mClient{ client }
+// Grab a pointer to the access object,
+// extending its lifetime while this remains:
+, mpAccess{ access.shared_from_this() }
 , mProject{ project }
 {
 #if defined(__WXMAC__)
@@ -173,6 +177,9 @@ EffectUIHost::EffectUIHost(wxWindow *parent,
 #endif
    
    SetName( effect.GetDefinition().GetName() );
+
+   // This style causes Validate() and TransferDataFromWindow() to visit
+   // sub-windows recursively, applying any wxValidators
    SetExtraStyle(GetExtraStyle() | wxWS_EX_VALIDATE_RECURSIVELY);
    
    mParent = parent;
@@ -199,12 +206,44 @@ EffectUIHost::~EffectUIHost()
 
 bool EffectUIHost::TransferDataToWindow()
 {
-   return mEffectUIHost.TransferDataToWindow();
+   // Transfer-to takes const reference to settings
+   return mEffectUIHost.TransferDataToWindow(mpAccess->Get()) &&
+      //! Do other apperance updates
+      mpValidator->UpdateUI() &&
+      //! Do validators
+      wxDialogWrapper::TransferDataToWindow();
 }
 
 bool EffectUIHost::TransferDataFromWindow()
 {
-   return mEffectUIHost.TransferDataFromWindow();
+   //! Do validations of any wxValidator objects
+   if (!wxDialogWrapper::Validate())
+      return false;
+
+   //! Do transfers of any wxValidator objects
+   if (!wxDialogWrapper::TransferDataFromWindow())
+      return false;
+
+   //! Do other custom validation and transfer actions
+   if (!mpValidator->ValidateUI())
+      return false;
+   
+   // Transfer-from takes non-const reference to settings
+   bool result = true;
+   mpAccess->ModifySettings([&](EffectSettings &settings){
+      // Allow other transfers, and reassignment of settings
+      result = mEffectUIHost.TransferDataFromWindow(settings);
+      if (result) {
+         auto &definition = mEffectUIHost.GetDefinition();
+         if (definition.GetType() == EffectTypeGenerate) {
+            const auto seconds = settings.extra.GetDuration();
+            SetConfig(definition, PluginSettings::Private,
+               CurrentSettingsGroup(), EffectSettingsExtra::DurationKey(),
+               seconds);
+         }
+      }
+   });
+   return result;
 }
 
 // ============================================================================
@@ -404,10 +443,9 @@ bool EffectUIHost::Initialize()
 
          // Let the client add things to the panel
          ShuttleGui S1{ uw.get(), eIsCreating };
-         if (!mClient.PopulateUI(S1))
-         {
+         mpValidator = mClient.PopulateUI(S1, *mpAccess);
+         if (!mpValidator)
             return false;
-         }
 
          S.Prop( 1 )
             .Position(wxEXPAND)
@@ -508,7 +546,7 @@ void EffectUIHost::OnClose(wxCloseEvent & WXUNUSED(evt))
    Hide();
 
    mSuspensionScope.reset();
-   mClient.CloseUI();
+   mpValidator.reset();
 
    Destroy();
 #if wxDEBUG_LEVEL
@@ -546,16 +584,10 @@ void EffectUIHost::OnApply(wxCommandEvent & evt)
          return;
    }
    
-   if (!mClient.ValidateUI())
-   {
+   if (!TransferDataFromWindow() ||
+       !mEffectUIHost.GetDefinition()
+         .SaveUserPreset(CurrentSettingsGroup(), mpAccess->Get()))
       return;
-   }
-   
-   // This will take care of calling TransferDataFromWindow() for an effect.
-   if (!mEffectUIHost.GetDefinition().SaveUserPreset(mEffectUIHost.GetCurrentSettingsGroup()))
-   {
-      return;
-   }
 
    if (IsModal())
    {
@@ -732,12 +764,10 @@ void EffectUIHost::OnPlay(wxCommandEvent & WXUNUSED(evt))
 {
    if (!mSupportsRealtime)
    {
-      if (!mClient.ValidateUI() || !mEffectUIHost.TransferDataFromWindow())
-      {
+      if (!TransferDataFromWindow())
          return;
-      }
       
-      mEffectUIHost.Preview(false);
+      mEffectUIHost.Preview(*mpAccess, false);
       
       return;
    }
@@ -878,17 +908,21 @@ void EffectUIHost::OnUserPreset(wxCommandEvent & evt)
 {
    int preset = evt.GetId() - kUserPresetsID;
    
-   mEffectUIHost.GetDefinition()
-      .LoadUserPreset(mEffectUIHost.GetUserPresetsGroup(mUserPresets[preset]));
-   
+   mpAccess->ModifySettings([&](EffectSettings &settings){
+      mEffectUIHost.GetDefinition()
+         .LoadUserPreset(UserPresetsGroup(mUserPresets[preset]), settings);
+      TransferDataToWindow();
+   });
    return;
 }
 
 void EffectUIHost::OnFactoryPreset(wxCommandEvent & evt)
 {
-   mEffectUIHost.GetDefinition()
-      .LoadFactoryPreset(evt.GetId() - kFactoryPresetsID);
-   
+   mpAccess->ModifySettings([&](EffectSettings &settings){
+      mEffectUIHost.GetDefinition()
+         .LoadFactoryPreset(evt.GetId() - kFactoryPresetsID, settings);
+      TransferDataToWindow();
+   });
    return;
 }
 
@@ -903,8 +937,7 @@ void EffectUIHost::OnDeletePreset(wxCommandEvent & evt)
    if (res == wxYES)
    {
       RemoveConfigSubgroup(mEffectUIHost.GetDefinition(),
-         PluginSettings::Private,
-         mEffectUIHost.GetUserPresetsGroup(preset));
+         PluginSettings::Private, UserPresetsGroup(preset));
    }
    
    LoadUserPresets();
@@ -981,8 +1014,9 @@ void EffectUIHost::OnSaveAs(wxCommandEvent & WXUNUSED(evt))
          }
       }
       
-      mEffectUIHost.GetDefinition()
-         .SaveUserPreset(mEffectUIHost.GetUserPresetsGroup(name));
+      if (TransferDataFromWindow())
+         mEffectUIHost.GetDefinition()
+            .SaveUserPreset(UserPresetsGroup(name), mpAccess->Get());
       LoadUserPresets();
       
       break;
@@ -993,10 +1027,12 @@ void EffectUIHost::OnSaveAs(wxCommandEvent & WXUNUSED(evt))
 
 void EffectUIHost::OnImport(wxCommandEvent & WXUNUSED(evt))
 {
-   mClient.ImportPresets();
-   
+   mpAccess->ModifySettings([&](EffectSettings &settings){
+      mClient.ImportPresets(settings);
+      TransferDataToWindow();
+   });
    LoadUserPresets();
-   
+
    return;
 }
 
@@ -1004,7 +1040,8 @@ void EffectUIHost::OnExport(wxCommandEvent & WXUNUSED(evt))
 {
    // may throw
    // exceptions are handled in AudacityApp::OnExceptionInMainLoop
-   mClient.ExportPresets();
+   if (TransferDataFromWindow())
+     mClient.ExportPresets(mpAccess->Get());
    
    return;
 }
@@ -1018,8 +1055,10 @@ void EffectUIHost::OnOptions(wxCommandEvent & WXUNUSED(evt))
 
 void EffectUIHost::OnDefaults(wxCommandEvent & WXUNUSED(evt))
 {
-   mEffectUIHost.GetDefinition().LoadFactoryDefaults();
-   
+   mpAccess->ModifySettings([&](EffectSettings &settings){
+      mEffectUIHost.GetDefinition().LoadFactoryDefaults(settings);
+      TransferDataToWindow();
+   });
    return;
 }
 
@@ -1139,8 +1178,8 @@ void EffectUIHost::LoadUserPresets()
 {
    mUserPresets.clear();
    
-   GetConfigSubgroups(mEffectUIHost.GetDefinition(), PluginSettings::Private,
-      mEffectUIHost.GetUserPresetsGroup(wxEmptyString), mUserPresets);
+   GetConfigSubgroups(mEffectUIHost.GetDefinition(),
+      PluginSettings::Private, UserPresetsGroup(wxEmptyString), mUserPresets);
    
    std::sort( mUserPresets.begin(), mUserPresets.end() );
    
@@ -1193,7 +1232,8 @@ void EffectUIHost::CleanupRealtime()
 
 wxDialog *EffectUI::DialogFactory( wxWindow &parent,
    EffectUIHostInterface &host,
-   EffectUIClientInterface &client)
+   EffectUIClientInterface &client,
+   EffectSettingsAccess &access)
 {
    // Make sure there is an associated project, whose lifetime will
    // govern the lifetime of the dialog, even when the dialog is
@@ -1203,7 +1243,7 @@ wxDialog *EffectUI::DialogFactory( wxWindow &parent,
       return nullptr;
 
    Destroy_ptr<EffectUIHost> dlg{
-      safenew EffectUIHost{ &parent, *project, host, client} };
+      safenew EffectUIHost{ &parent, *project, host, client, access } };
    
    if (dlg->Initialize())
    {
@@ -1288,21 +1328,26 @@ wxDialog *EffectUI::DialogFactory( wxWindow &parent,
    EffectManager & em = EffectManager::Get();
 
    em.SetSkipStateFlag( false );
+   success = false;
    if (auto effect = em.GetEffect(ID)) {
-      success = effect->DoEffect(
-         rate,
-         &tracks,
-         &trackFactory,
-         selectedRegion,
-         flags,
-         &window,
-         (flags & EffectManager::kConfigured) == 0
-            ? DialogFactory
-            : nullptr
-      );
+      if (auto pSettings = em.GetDefaultSettings(ID)) {
+         const auto pAccess =
+            std::make_shared<SimpleEffectSettingsAccess>(*pSettings);
+         pAccess->ModifySettings([&](EffectSettings &settings){
+            success = effect->DoEffect(settings,
+               rate,
+               &tracks,
+               &trackFactory,
+               selectedRegion,
+               flags,
+               &window,
+               (flags & EffectManager::kConfigured) == 0
+                  ? DialogFactory
+                  : nullptr,
+               pAccess);
+         });
+      }
    }
-   else
-      success = false;
 
    if (!success)
       return false;

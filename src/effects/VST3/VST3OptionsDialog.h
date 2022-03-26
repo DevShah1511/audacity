@@ -11,15 +11,14 @@
 #pragma once
 
 #include "widgets/wxPanelWrapper.h"
-#include "EffectHostInterface.h"
 
+class EffectDefinitionInterface;
 class ShuttleGui;
 
 class VST3OptionsDialog final : public wxDialogWrapper
 {
 public:
-   VST3OptionsDialog(wxWindow * parent,
-      EffectHostInterface &host, EffectDefinitionInterface &effect);
+   VST3OptionsDialog(wxWindow * parent, EffectDefinitionInterface &effect);
    virtual ~VST3OptionsDialog();
 
    void PopulateOrExchange(ShuttleGui & S);
@@ -27,7 +26,6 @@ public:
    void OnOk(wxCommandEvent & evt);
 
 private:
-   EffectHostInterface &mHost;
    EffectDefinitionInterface &mEffect;
    int mBufferSize;
    bool mUseGUI;
